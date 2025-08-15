@@ -1,6 +1,7 @@
 ﻿#Requires AutoHotkey v2.0
 ; Make rendering crisp on Win10/11 multi-DPI setups
 try DllCall("user32\SetProcessDpiAwarenessContext", "ptr", -4) ; PER_MONITOR_AWARE_V2
+global gBar := 0, gEdit := 0, EditBrush := 0
 
 ; ====== CONFIG ======
 API_URL := "https://api.easydoo.com/api/integration/CreateOrUpdateEntity"
@@ -15,82 +16,88 @@ DEBUG := 0   ; 1 = show payload/response MsgBoxes, 0 = silent
 ; ====================
 
 ; Hotkey: Ctrl+Alt+T -> show input bar
-^!t::
-{
-    ShowInputBar()
-}
-
-; --- UI: minimal bar (borderless, always-on-top) ---
-global gBar := 0, gEdit := 0
+^!t::ShowInputBar()
 
 ShowInputBar() {
-    global gBar, gEdit
+    global gBar, gEdit, EditBrush
 
     if !gBar {
         gBar := Gui("+AlwaysOnTop -Caption +ToolWindow", "Quick POST")
+        gBar.SetFont("s20", "FiraCode Nerd Font")
 
-        ; --- Proper Dark Mode Setup ---
         ApplyWin11Effects(gBar.Hwnd, Map(
-            "Dark", true,        ; dark title bar
-            "Corners", 2,        ; round corners
-            "Backdrop", 2,       ; Mica backdrop
-            "Shadow", true       ; subtle shadow
+            "Dark", true,
+            "Corners", 2,
+            "Backdrop", 2,
+            "Shadow", true
         ))
 
-        ; Dark background that works with Mica
-        gBar.BackColor := "1E1E1E"  ; Dark gray that complements Mica
+        gBar.BackColor := "1E1E1E"
+        gBar.Add("Text", "x0 y0 w1080 h120 Background2D2D30 -TabStop")
+        gBar.Add("Text", "x24 y26 w1032 h54 Background404040 -TabStop")
 
-        ; Card background - slightly lighter than main background
-        card := gBar.Add("Text", "x0 y0 w1080 h120 Background2D2D30 -TabStop")
+        gEdit := gBar.Add("Edit", "x28 y30 w1024 h46 -Border -E0x200")
+        gEdit.SetFont("s20", "FiraCode Nerd Font")
 
-        ; Create a custom dark input using a borderless edit with owner-drawn background
-        ; First create the visual dark background
-        inputBg := gBar.Add("Text", "x24 y26 w1032 h54 Background404040 -TabStop")
-        
-        ; Then create a borderless edit on top
-        gBar.SetFont("s20", "Segoe UI")
-        gEdit := gBar.Add("Edit", "x28 y30 w1024 h46 -Border -E0x200") ; -E0x200 removes WS_EX_CLIENTEDGE
-        
-        ; Use system default colors but on our dark background
-        gEdit.SetFont("s20")  ; Let Windows handle the color automatically
-        
-        ; Apply Windows dark mode to the edit control if possible
+        ; Always-dark edit box
+        OnMessage(0x0133, EditColorHandler)
+        OnMessage(0x0138, EditColorHandler)
+        if !EditBrush
+            EditBrush := DllCall("gdi32\CreateSolidBrush", "uint", 0x2D2D30, "ptr")
+
         try DllCall("uxtheme\SetWindowTheme", "ptr", gEdit.Hwnd, "wstr", "DarkMode_Explorer", "ptr", 0)
-        
+
         gEdit.OnEvent("Focus", (*) => Send("^a"))
         SetCueBanner(gEdit.Hwnd, "Enter the name of the easydoo-workitem…")
         SetEditMargins(gEdit.Hwnd, 14, 14)
 
-        ; Dark divider
         gBar.Add("Text", "x24 y84 w1032 h1 Background404040 -TabStop")
-
-        ; Default hidden button & escape event
         btn := gBar.Add("Button", "Default w0 h0"), btn.OnEvent("Click", (*) => Submit())
         gBar.OnEvent("Escape", (*) => (gBar.Hide(), ToolTip()))
     }
 
     gEdit.Value := ""
-    sw := A_ScreenWidth, sh := A_ScreenHeight
-    gBar.Show(Format("x{} y{}", (sw-1080)//2, sh//6))
+
+    ; --- Precise centering with DPI-correct size ---
+    gBar.Show("Hide AutoSize")
+    gBar.GetPos(, , &w, &h)
+
+    MouseGetPos &mx, &my
+    idx := MonitorGetPrimary()
+    Loop MonitorGetCount() {
+        MonitorGet(A_Index, &L, &T, &R, &B)
+        if (mx >= L && mx < R && my >= T && my < B) {
+            idx := A_Index
+            break
+        }
+    }
+    MonitorGetWorkArea(idx, &L, &T, &R, &B)
+
+    dpi := DllCall("user32\GetDpiForWindow", "ptr", gBar.Hwnd, "uint")
+    scale := dpi / 96.0
+    pw := Round(w * scale), ph := Round(h * scale)
+
+    x := L + ((R - L) - pw) // 2
+    y := T + ((B - T) - ph) // 2
+    gBar.Show(Format("x{} y{}", x, y))
     gEdit.Focus()
 }
 
-; --- Context-sensitive keys: only when our GUI is active ---
+; Keeps edit control dark with white text
+EditColorHandler(wParam, lParam, msg, hwnd) {
+    global gEdit, EditBrush
+    if (lParam = gEdit.Hwnd) {
+        DllCall("gdi32\SetTextColor", "ptr", wParam, "uint", 0xFFFFFF)
+        DllCall("gdi32\SetBkColor", "ptr", wParam, "uint", 0x2D2D30)
+        return EditBrush
+    }
+}
+
 #HotIf gBar && WinActive("ahk_id " gBar.Hwnd)
-Enter::
-{
-    Submit()
-    return
-}
-Esc::
-{
-    gBar.Hide()
-    ToolTip()
-    return
-}
+Enter::Submit()
+Esc::(gBar.Hide(), ToolTip())
 #HotIf
 
-; --- Submit: build JSON and POST (async + WaitForResponse) ---
 Submit() {
     global gBar, gEdit, API_URL, API_KEY
     title := Trim(gEdit.Value)
@@ -101,43 +108,38 @@ Submit() {
     gBar.Hide()
     payload := BuildJsonWithTitle(title)
 
-    if (DEBUG) {
+    if (DEBUG)
         MsgBox("Payload to send:`n`n" payload)
-    }
 
     try {
         WHR := ComObject("WinHttp.WinHttpRequest.5.1")
-        WHR.Open("POST", API_URL, true) ; async
+        WHR.Open("POST", API_URL, true)
         WHR.SetRequestHeader("Content-Type", "application/json")
         WHR.SetRequestHeader("x-api-key", API_KEY)
-        ; Fail fast instead of hanging
-        WHR.SetTimeouts(30000, 30000, 30000, 30000) ; resolve, connect, send, receive (ms)
+        WHR.SetTimeouts(30000, 30000, 30000, 30000)
 
         WHR.Send(payload)
-        WHR.WaitForResponse() ; keep UI responsive
+        WHR.WaitForResponse()
         status := WHR.Status
-        resp   := WHR.ResponseText
+        resp := WHR.ResponseText
 
-        if (DEBUG) {
+        if (DEBUG)
             MsgBox("HTTP Status: " status "`n`nResponse:`n`n" resp)
-        }
 
-        if (status >= 200 && status < 300) {
+        if (status >= 200 && status < 300)
             FlashTip("Sent ✓ (" status ")", 1800)
-        } else {
+        else
             FlashTip("Error " status ": " Shorten(resp), 4000)
-        }
     } catch as e {
-        if (DEBUG) {
+        if (DEBUG)
             MsgBox("Request failed:`n" e.Message)
-        }
         FlashTip("Request failed: " e.Message, 4000)
     }
 }
 
 ; --- Helpers ---
 BuildJsonWithTitle(title) {
-    q := Chr(34) ; double quote
+    q := Chr(34)
     return "{"
         . q "entity" q ": {"
             . q "$type" q ":" q "WorkItem" q ","
@@ -173,25 +175,22 @@ BuildJsonWithTitle(title) {
 }
 
 JsonEscape(str) {
-    ; Minimal JSON escape for quotes, backslash, and control chars
-    q := Chr(34) ; "
-    b := Chr(92) ; \
-    out := ""
+    q := Chr(34), b := Chr(92), out := ""
     for c in StrSplit(str, "") {
         code := Ord(c)
-        if (c = q)               ; quote
-            out .= b . q          ; -> \"
-        else if (c = b)          ; backslash
-            out .= b . b          ; -> \\
-        else if (code = 8)       ; backspace
+        if (c = q)
+            out .= b . q
+        else if (c = b)
+            out .= b . b
+        else if (code = 8)
             out .= b "b"
-        else if (code = 9)       ; tab
+        else if (code = 9)
             out .= b "t"
-        else if (code = 10)      ; newline
+        else if (code = 10)
             out .= b "n"
-        else if (code = 12)      ; form feed
+        else if (code = 12)
             out .= b "f"
-        else if (code = 13)      ; carriage return
+        else if (code = 13)
             out .= b "r"
         else if (code < 32)
             out .= Format("\u{:04X}", code)
@@ -212,59 +211,42 @@ FlashTip(text, ms := 2000) {
 }
 
 SetCueBanner(hEdit, text) {
-    ; EM_SETCUEBANNER (0x1501): show placeholder text in an Edit control
     DllCall("user32\SendMessageW", "ptr", hEdit, "uint", 0x1501, "ptr", 1, "wstr", text)
 }
 
 SetEditMargins(hEdit, leftPx := 8, rightPx := 8) {
-    ; EM_SETMARGINS (0x00D3): set left/right inner padding (MAKELONG)
     lParam := leftPx | (rightPx << 16)
     DllCall("user32\SendMessageW", "ptr", hEdit, "uint", 0x00D3, "ptr", 0x3, "ptr", lParam)
 }
 
 SetEditColors(hEdit) {
-    ; Try to force dark theme on the edit control
-    ; Method 1: Send messages to set colors
-    DllCall("user32\SendMessageW", "ptr", hEdit, "uint", 0x00C4, "ptr", 0, "ptr", 0x2D2D30) ; EM_SETBKGNDCOLOR
-    
-    ; Method 2: Try to enable dark mode for the control
-    try {
-        ; Enable dark mode for this window (Win10 1903+)
-        DllCall("uxtheme\SetWindowTheme", "ptr", hEdit, "wstr", "DarkMode_Explorer", "ptr", 0)
-    }
-    
-    ; Method 3: Alternative dark mode attribute
+    DllCall("user32\SendMessageW", "ptr", hEdit, "uint", 0x00C4, "ptr", 0, "ptr", 0x2D2D30)
+    try DllCall("uxtheme\SetWindowTheme", "ptr", hEdit, "wstr", "DarkMode_Explorer", "ptr", 0)
     try {
         val := 1
         DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hEdit, "uint", 20, "int*", val, "uint", 4)
     }
 }
 
-; ---- Win11Effects.ahv (AutoHotkey v2) ----
 ApplyWin11Effects(hwnd, opts := Map(
-    "Dark", true,              ; dark title bar
-    "Corners", 2,              ; 2=Round
-    "Backdrop", 2,             ; 2=Mica, 3=Transient (Acrylic-like), 4=Tabbed (Mica Alt)
-    "Shadow", true             ; enable subtle DWM shadow
+    "Dark", true,
+    "Corners", 2,
+    "Backdrop", 2,
+    "Shadow", true
 )) {
-    ; Dark title bar
     if opts["Dark"] {
         val := 1
         DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hwnd, "uint", 20, "int*", val, "uint", 4)
     }
-    ; Rounded corners
     if opts.Has("Corners") {
         corner := Integer(opts["Corners"])
         DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hwnd, "uint", 33, "int*", corner, "uint", 4)
     }
-    ; System-drawn backdrop (Win11 22H2+)
     if opts.Has("Backdrop") {
-        bt := Integer(opts["Backdrop"])  ; 2=Mica, 3=Transient (Acrylic-like), 4=Tabbed (Mica Alt)
+        bt := Integer(opts["Backdrop"])
         DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hwnd, "uint", 38, "int*", bt, "uint", 4)
     }
-    ; Subtle shadow on borderless windows: extend glass a hair into client area
     if opts["Shadow"] {
-        ; MARGINS struct: left, right, top, bottom (4x Int)
         margins := Buffer(16, 0)
         NumPut("int", 1, margins, 0), NumPut("int", 1, margins, 4)
         NumPut("int", 1, margins, 8), NumPut("int", 1, margins, 12)
