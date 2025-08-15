@@ -2,10 +2,8 @@
 ; Make rendering crisp on Win10/11 multi-DPI setups
 try DllCall("user32\SetProcessDpiAwarenessContext", "ptr", -4) ; PER_MONITOR_AWARE_V2
 
-
 ; ====== CONFIG ======
 API_URL := "https://api.easydoo.com/api/integration/CreateOrUpdateEntity"
-
 
 API_KEY := EnvGet("EASYDOO_API_KEY")
 if !API_KEY {
@@ -31,34 +29,40 @@ ShowInputBar() {
     if !gBar {
         gBar := Gui("+AlwaysOnTop -Caption +ToolWindow", "Quick POST")
 
-        ; --- Win11 look ---
+        ; --- Proper Dark Mode Setup ---
         ApplyWin11Effects(gBar.Hwnd, Map(
             "Dark", true,        ; dark title bar
-            "Corners", 2,        ; round
-            "Backdrop", 2,       ; 2=Mica | 3=Transient(Acrylic-like) | 4=Tabbed(Mica Alt)
-            "Shadow", true
+            "Corners", 2,        ; round corners
+            "Backdrop", 2,       ; Mica backdrop
+            "Shadow", true       ; subtle shadow
         ))
 
-        ; Use a near-transparent or themed background so the backdrop can “read” through
-        ; Neutral surface (keeps text legible atop Mica/Acrylic)
-        gBar.BackColor := "F3F4F6"
+        ; Dark background that works with Mica
+        gBar.BackColor := "1E1E1E"  ; Dark gray that complements Mica
 
-        ; Card
-; Card
-card := gBar.Add("Text", "x0 y0 w1080 h120 BackgroundTrans -TabStop")
+        ; Card background - slightly lighter than main background
+        card := gBar.Add("Text", "x0 y0 w1080 h120 Background2D2D30 -TabStop")
 
-        ; Edit
+        ; Create a custom dark input using a borderless edit with owner-drawn background
+        ; First create the visual dark background
+        inputBg := gBar.Add("Text", "x24 y26 w1032 h54 Background404040 -TabStop")
+        
+        ; Then create a borderless edit on top
         gBar.SetFont("s20", "Segoe UI")
-        gEdit := gBar.Add("Edit", "x24 y26 w1032 h54 -Wrap -VScroll -HScroll -Border")
-       gEdit.BackColor := "F3F4F6"  ; or a dark tone if using dark mode
-
-        gEdit.SetFont("s20 c202020")
+        gEdit := gBar.Add("Edit", "x28 y30 w1024 h46 -Border -E0x200") ; -E0x200 removes WS_EX_CLIENTEDGE
+        
+        ; Use system default colors but on our dark background
+        gEdit.SetFont("s20")  ; Let Windows handle the color automatically
+        
+        ; Apply Windows dark mode to the edit control if possible
+        try DllCall("uxtheme\SetWindowTheme", "ptr", gEdit.Hwnd, "wstr", "DarkMode_Explorer", "ptr", 0)
+        
         gEdit.OnEvent("Focus", (*) => Send("^a"))
         SetCueBanner(gEdit.Hwnd, "Enter the name of the easydoo-workitem…")
         SetEditMargins(gEdit.Hwnd, 14, 14)
 
-        ; Divider (very soft)
-        gBar.Add("Text", "x24 y84 w1032 h1 BackgroundCFCFCF -TabStop")
+        ; Dark divider
+        gBar.Add("Text", "x24 y84 w1032 h1 Background404040 -TabStop")
 
         ; Default hidden button & escape event
         btn := gBar.Add("Button", "Default w0 h0"), btn.OnEvent("Click", (*) => Submit())
@@ -70,7 +74,6 @@ card := gBar.Add("Text", "x0 y0 w1080 h120 BackgroundTrans -TabStop")
     gBar.Show(Format("x{} y{}", (sw-1080)//2, sh//6))
     gEdit.Focus()
 }
-
 
 ; --- Context-sensitive keys: only when our GUI is active ---
 #HotIf gBar && WinActive("ahk_id " gBar.Hwnd)
@@ -102,14 +105,13 @@ Submit() {
         MsgBox("Payload to send:`n`n" payload)
     }
 
-
     try {
         WHR := ComObject("WinHttp.WinHttpRequest.5.1")
         WHR.Open("POST", API_URL, true) ; async
         WHR.SetRequestHeader("Content-Type", "application/json")
         WHR.SetRequestHeader("x-api-key", API_KEY)
-; Fail fast instead of hanging
-WHR.SetTimeouts(30000, 30000, 30000, 30000) ; resolve, connect, send, receive (ms)
+        ; Fail fast instead of hanging
+        WHR.SetTimeouts(30000, 30000, 30000, 30000) ; resolve, connect, send, receive (ms)
 
         WHR.Send(payload)
         WHR.WaitForResponse() ; keep UI responsive
@@ -119,7 +121,6 @@ WHR.SetTimeouts(30000, 30000, 30000, 30000) ; resolve, connect, send, receive (m
         if (DEBUG) {
             MsgBox("HTTP Status: " status "`n`nResponse:`n`n" resp)
         }
-
 
         if (status >= 200 && status < 300) {
             FlashTip("Sent ✓ (" status ")", 1800)
@@ -140,7 +141,7 @@ BuildJsonWithTitle(title) {
     return "{"
         . q "entity" q ": {"
             . q "$type" q ":" q "WorkItem" q ","
-                        . q "assignedTo" q ": {"
+            . q "assignedTo" q ": {"
                 . q "id" q ":" q "0cbfe7f3-a091-4ca2-8dda-85bb43f73c31" q
             . "},"
             . q "workItemType" q ": {"
@@ -170,7 +171,6 @@ BuildJsonWithTitle(title) {
         . q "workspaceId" q ":" q "3ef492ff-3165-4cbf-a7cf-2003234703ca" q
     . "}"
 }
-
 
 JsonEscape(str) {
     ; Minimal JSON escape for quotes, backslash, and control chars
@@ -222,34 +222,25 @@ SetEditMargins(hEdit, leftPx := 8, rightPx := 8) {
     DllCall("user32\SendMessageW", "ptr", hEdit, "uint", 0x00D3, "ptr", 0x3, "ptr", lParam)
 }
 
-EnableDropShadow(hwnd) {
-    ; Turn on non-client rendering so DWM draws a shadow for borderless windows
-    DWMNCRP_ENABLED := 2
-    try DllCall("dwmapi\DwmSetWindowAttribute","ptr",hwnd,"int",2,"int*",DWMNCRP_ENABLED,"int",4) ; DWMWA_NCRENDERING_POLICY=2
+SetEditColors(hEdit) {
+    ; Try to force dark theme on the edit control
+    ; Method 1: Send messages to set colors
+    DllCall("user32\SendMessageW", "ptr", hEdit, "uint", 0x00C4, "ptr", 0, "ptr", 0x2D2D30) ; EM_SETBKGNDCOLOR
+    
+    ; Method 2: Try to enable dark mode for the control
+    try {
+        ; Enable dark mode for this window (Win10 1903+)
+        DllCall("uxtheme\SetWindowTheme", "ptr", hEdit, "wstr", "DarkMode_Explorer", "ptr", 0)
+    }
+    
+    ; Method 3: Alternative dark mode attribute
+    try {
+        val := 1
+        DllCall("dwmapi\DwmSetWindowAttribute", "ptr", hEdit, "uint", 20, "int*", val, "uint", 4)
+    }
 }
 
-EnableAcrylic(hwnd, opacity := 175, tintRGB := 0x202020) {
-    static WCA_ACCENT_POLICY := 19, ACCENT_ENABLE_ACRYLICBLURBEHIND := 4
-
-    tintARGB := (opacity << 24) | (tintRGB & 0xFFFFFF)
-
-    ; ACCENT_POLICY struct
-    ACCENT := Buffer(16, 0)
-    NumPut("Int", ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT, 0)
-    NumPut("Int", 0, ACCENT, 4)       ; Flags
-    NumPut("Int", tintARGB, ACCENT, 8) ; GradientColor (ARGB)
-    NumPut("Int", 0, ACCENT, 12)       ; AnimationId
-
-    ; WINDOWCOMPOSITIONATTRIBUTEDATA struct
-    DATA := Buffer(24, 0)
-    NumPut("Int", WCA_ACCENT_POLICY, DATA, 0)   ; Attribute
-    NumPut("Ptr", ACCENT.Ptr, DATA, 8)          ; Data
-    NumPut("UInt", 16, DATA, 16)                ; Size of ACCENT
-
-    try DllCall("user32\SetWindowCompositionAttribute", "ptr", hwnd, "ptr", DATA)
-}
-
-; ---- Win11Effects.ahk (AutoHotkey v2) ----
+; ---- Win11Effects.ahv (AutoHotkey v2) ----
 ApplyWin11Effects(hwnd, opts := Map(
     "Dark", true,              ; dark title bar
     "Corners", 2,              ; 2=Round
@@ -280,4 +271,3 @@ ApplyWin11Effects(hwnd, opts := Map(
         DllCall("dwmapi\DwmExtendFrameIntoClientArea", "ptr", hwnd, "ptr", margins)
     }
 }
-
