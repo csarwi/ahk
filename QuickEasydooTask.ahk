@@ -16,7 +16,10 @@ DEBUG := 0   ; 1 = show payload/response MsgBoxes, 0 = silent
 ; ====================
 
 ; Hotkey: Ctrl+Alt+T -> show input bar
-^!t::ShowInputBar()
+^!k::ShowInputBar()
+#e::Run('"' EnvGet("LocalAppData") '\VoidStar\FilePilot\FPilot.exe" "C:"')
+
+
 
 ShowInputBar() {
     global gBar, gEdit, EditBrush
