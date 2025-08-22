@@ -256,3 +256,92 @@ ApplyWin11Effects(hwnd, opts := Map(
         DllCall("dwmapi\DwmExtendFrameIntoClientArea", "ptr", hwnd, "ptr", margins)
     }
 }
+
+; Hotkey: Ctrl+Alt+Win+O  (change if you like)
+^!#o:: {
+    created := 0
+    skipped := 0
+    failed  := 0
+    targetDir := "C:\Users\rwietlisbach\OneDrive - Creativ Software AG\Office Lens"
+
+    if !DirExist(targetDir) {
+        MsgBox "Ordner nicht gefunden:`n" targetDir, "Fehler", "Iconx"
+        return
+    }
+
+    ; Try common 7z locations, then fall back to PATH
+    candidates := [
+        A_ProgramFiles "\7-Zip\7z.exe",
+        A_ProgramFiles "\7-Zip-Zstandard\7z.exe",
+        "C:\Program Files\7-Zip\7z.exe",
+        "C:\Program Files (x86)\7-Zip\7z.exe",
+        "7z.exe"
+    ]
+    sevenZip := ""
+    for path in candidates {
+        if FileExist(path) {
+            sevenZip := path
+            break
+        }
+    }
+    if sevenZip = "" {
+        MsgBox "7-Zip (7z.exe) wurde nicht gefunden. Bitte 7-Zip installieren " 
+             . "oder den Pfad in der Variable 'candidates' anpassen.", "Fehler", "Iconx"
+        return
+    }
+
+    fmt := EnvGet("ZIP_PW_FORMAT")
+    if (fmt = "") {
+        MsgBox "Umgebungsvariable 'ZIP_PW_FORMAT' ist nicht gesetzt!", "Fehler", "Iconx"
+        return
+    }
+
+    ; Aktuelles Datum formatieren
+    yyyy := FormatTime(, "yyyy")
+    mm   := FormatTime(, "MM")
+
+    ; Tokenersetzungen (unterstützt {YYYY}, {YY}, {MM}, {M})
+    password := fmt
+    password := StrReplace(password, "{YYYY}", yyyy)
+    password := StrReplace(password, "{YY}",   FormatTime(, "yy"))
+    password := StrReplace(password, "{MM}",   mm)
+    password := StrReplace(password, "{M}",    FormatTime(, "M"))
+
+    ; Loop files (only files), skip existing .zip files
+    Loop Files, targetDir "\*.*", "F" {
+        filePath := A_LoopFileFullPath
+
+        ; Skip .zip sources themselves
+        if StrLower(RegExReplace(A_LoopFileName, ".*\.")) = "zip" {
+            continue
+        }
+
+        ; zip path with same base name in same folder
+        baseName := RegExReplace(A_LoopFileName, "\.[^.]+$")
+        zipPath  := A_LoopFileDir "\" baseName ".zip"
+
+        if FileExist(zipPath) {
+            skipped++
+            continue
+        }
+
+        ; Create encrypted ZIP with AES-256
+        ; 7z syntax: 7z a -tzip -pPASSWORD -mem=AES256 -y "zipPath" "filePath"
+        cmd := Format('"{1}" a -tzip -p{2} -mem=AES256 -y -- "{3}" "{4}"'
+                    , sevenZip, password, zipPath, filePath)
+
+        try {
+            ret := RunWait(cmd, , "Hide")
+            if FileExist(zipPath){
+                created++
+                FileDelete filePath
+            }
+            else
+                failed++
+        } catch {
+            failed := (IsSet(failed) ? failed : 0) + 1
+        }
+
+    }
+
+    }
