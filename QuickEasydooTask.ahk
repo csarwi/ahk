@@ -257,19 +257,19 @@ ApplyWin11Effects(hwnd, opts := Map(
     }
 }
 
-; Hotkey: Ctrl+Alt+Win+O  (change if you like)
+; Hotkey: Ctrl+Alt+Win+O
 ^!#o:: {
     created := 0
     skipped := 0
     failed  := 0
-    targetDir := "C:\Users\rwietlisbach\OneDrive - Creativ Software AG\Office Lens"
 
-    if !DirExist(targetDir) {
-        MsgBox "Ordner nicht gefunden:`n" targetDir, "Fehler", "Iconx"
+    sel := GetSelectedPaths()
+    if sel.Length = 0 {
+        MsgBox "Kein Element in Datei-Explorer ausgewählt.", "Hinweis", "Iconi"
         return
     }
 
-    ; Try common 7z locations, then fall back to PATH
+    ; Find 7z.exe (try common locations, then PATH)
     candidates := [
         A_ProgramFiles "\7-Zip\7z.exe",
         A_ProgramFiles "\7-Zip-Zstandard\7z.exe",
@@ -278,15 +278,15 @@ ApplyWin11Effects(hwnd, opts := Map(
         "7z.exe"
     ]
     sevenZip := ""
-    for path in candidates {
-        if FileExist(path) {
-            sevenZip := path
+    for p in candidates {
+        if FileExist(p) {
+            sevenZip := p
             break
         }
     }
     if sevenZip = "" {
         MsgBox "7-Zip (7z.exe) wurde nicht gefunden. Bitte 7-Zip installieren " 
-             . "oder den Pfad in der Variable 'candidates' anpassen.", "Fehler", "Iconx"
+             . "oder den Pfad in der Liste 'candidates' anpassen.", "Fehler", "Iconx"
         return
     }
 
@@ -296,52 +296,83 @@ ApplyWin11Effects(hwnd, opts := Map(
         return
     }
 
-    ; Aktuelles Datum formatieren
+    ; Datumstokens einsetzen: {YYYY}, {YY}, {MM}, {M}
     yyyy := FormatTime(, "yyyy")
     mm   := FormatTime(, "MM")
-
-    ; Tokenersetzungen (unterstützt {YYYY}, {YY}, {MM}, {M})
     password := fmt
     password := StrReplace(password, "{YYYY}", yyyy)
     password := StrReplace(password, "{YY}",   FormatTime(, "yy"))
     password := StrReplace(password, "{MM}",   mm)
     password := StrReplace(password, "{M}",    FormatTime(, "M"))
 
-    ; Loop files (only files), skip existing .zip files
-    Loop Files, targetDir "\*.*", "F" {
-        filePath := A_LoopFileFullPath
-
+    for filePath in sel {
         ; Skip .zip sources themselves
-        if StrLower(RegExReplace(A_LoopFileName, ".*\.")) = "zip" {
+        if StrLower(RegExReplace(filePath, ".*\.")) = "zip" {
+            skipped++
             continue
         }
 
-        ; zip path with same base name in same folder
-        baseName := RegExReplace(A_LoopFileName, "\.[^.]+$")
-        zipPath  := A_LoopFileDir "\" baseName ".zip"
+        dir := SplitPath(filePath, &name, &dirPath, &ext, &nameNoExt)
+        zipPath := dirPath "\" nameNoExt ".zip"
 
         if FileExist(zipPath) {
             skipped++
             continue
         }
 
-        ; Create encrypted ZIP with AES-256
-        ; 7z syntax: 7z a -tzip -pPASSWORD -mem=AES256 -y "zipPath" "filePath"
-        cmd := Format('"{1}" a -tzip -p{2} -mem=AES256 -y -- "{3}" "{4}"'
+        ; Build 7z command (quote password to allow spaces/specials)
+        ; 7z a -tzip -p"PASSWORD" -mem=AES256 -y -- "zipPath" "filePath"
+        cmd := Format('"{1}" a -tzip -p"{2}" -mem=AES256 -y -- "{3}" "{4}"'
                     , sevenZip, password, zipPath, filePath)
 
         try {
             ret := RunWait(cmd, , "Hide")
-            if FileExist(zipPath){
+            if FileExist(zipPath) {
                 created++
-                FileDelete filePath
-            }
-            else
+                ; Delete original only if it is a file, not a folder
+                if InStr(FileGetAttrib(filePath), "D") = 0 {
+                    FileDelete filePath
+                }
+            } else {
                 failed++
+            }
         } catch {
-            failed := (IsSet(failed) ? failed : 0) + 1
+            failed++
         }
-
     }
 
+    MsgBox Format("Fertig.`nErstellt: {1}`nUebersprungen: {2}`nFehlgeschlagen: {3}"
+                , created, skipped, failed), "Ergebnis", "Iconi"
+}
+
+; -------- Helpers --------
+
+GetSelectedPaths() {
+    paths := []
+    hwnd := WinActive("ahk_class CabinetWClass")      ; File Explorer
+    if !hwnd
+        hwnd := WinActive("ahk_class ExploreWClass")  ; (rare older class)
+    if !hwnd
+        return paths
+
+    shell := ComObject("Shell.Application")
+    for win in shell.Windows {
+        try {
+            if win.hwnd = hwnd {
+                for item in win.Document.SelectedItems
+                    paths.Push(item.Path)
+                break
+            }
+        }
     }
+    return paths
+}
+
+SplitPath(full, &name?, &dir?, &ext?, &nameNoExt?) {
+    name := RegExReplace(full, ".+\\")
+    dir  := SubStr(full, 1, StrLen(full) - StrLen(name) - (InStr(full, "\") ? 0 : 0))
+    ext  := RegExReplace(name, ".*\.")
+    nameNoExt := RegExReplace(name, "\.[^.]+$")
+    return dir
+}
+
