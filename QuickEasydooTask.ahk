@@ -19,6 +19,9 @@ DEBUG := 0   ; 1 = show payload/response MsgBoxes, 0 = silent
 ^!k::ShowInputBar()
 #e::Run('"' EnvGet("LocalAppData") '\VoidStar\FilePilot\FPilot.exe" "C:"')
 
+; Help hotkey: Ctrl+Win+Alt+H -> show all shortcuts
+^#!h::ShowHelpDialog()
+
 
 
 ShowInputBar() {
@@ -374,5 +377,22 @@ SplitPath(full, &name?, &dir?, &ext?, &nameNoExt?) {
     ext  := RegExReplace(name, ".*\.")
     nameNoExt := RegExReplace(name, "\.[^.]+$")
     return dir
+}
+
+; Show help dialog with all available hotkeys
+ShowHelpDialog() {
+    helpText := "Available Hotkeys:`n`n"
+              . "Ctrl+Alt+K - Show Quick Task Input`n"
+              . "   Creates a new EasyDoo work item with the entered title`n`n"
+              . "Win+E - Open File Explorer`n"
+              . "   Opens FilePilot file manager at C: drive`n`n"
+              . "Ctrl+Win+Alt+O - ZIP Selected Files`n"
+              . "   Creates password-protected ZIP files from selected items`n"
+              . "   (Uses ZIP_PW_FORMAT environment variable for password)`n`n"
+              . "Ctrl+Win+Alt+H - Show This Help`n"
+              . "   Displays all available keyboard shortcuts`n`n"
+              . "Press OK to close this help."
+    
+    MsgBox(helpText, "AutoHotkey Script - Available Shortcuts", 0)
 }
 
